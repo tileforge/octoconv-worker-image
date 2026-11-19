@@ -1,0 +1,35 @@
+{
+  "capabilities": [
+    {
+      "id": "octoconv.convert.image",
+      "version": 1,
+      "legacy": {"operation": "convert", "engine": "image"},
+      "client_operation": "convert",
+      "inputs": [{"role": "source", "min": 1, "max": 1}],
+      "outputs": [{"role": "primary", "min": 1, "max": 1}],
+      "parameter_schema": {},
+      "formats": [
+        {"from": "png", "to": "jpg"},
+        {"from": "png", "to": "webp"},
+        {"from": "png", "to": "heic"},
+        {"from": "png", "to": "tiff"},
+        {"from": "jpg", "to": "png"},
+        {"from": "jpg", "to": "webp"},
+        {"from": "jpg", "to": "heic"},
+        {"from": "jpg", "to": "tiff"},
+        {"from": "webp", "to": "png"},
+        {"from": "webp", "to": "jpg"},
+        {"from": "webp", "to": "heic"},
+        {"from": "webp", "to": "tiff"},
+        {"from": "heic", "to": "png"},
+        {"from": "heic", "to": "jpg"},
+        {"from": "heic", "to": "webp"},
+        {"from": "heic", "to": "tiff"},
+        {"from": "tiff", "to": "png"},
+        {"from": "tiff", "to": "jpg"},
+        {"from": "tiff", "to": "webp"},
+        {"from": "tiff", "to": "heic"}
+      ]
+    }
+  ]
+}
