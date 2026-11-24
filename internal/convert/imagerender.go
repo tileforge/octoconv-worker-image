@@ -43,17 +43,14 @@ func (ImageRenderConverter) Pairs() []Pair {
 // Convert writes one opaque square PNG at outPath.
 // A nil or empty opts map uses edge 1280. The only accepted key is size.
 func (c ImageRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
-	fitPath := filepath.Join(filepath.Dir(outPath), "fit.png")
-	if err := c.draw(ctx, inPath, outPath, fitPath, opts); err != nil {
+	if err := c.draw(ctx, inPath, outPath, opts); err != nil {
 		_ = os.Remove(outPath)
-		_ = os.Remove(fitPath)
 		return err
 	}
-	_ = os.Remove(fitPath)
 	return nil
 }
 
-func (c ImageRenderConverter) draw(ctx context.Context, inPath, outPath, fitPath string, opts map[string]any) error {
+func (c ImageRenderConverter) draw(ctx context.Context, inPath, outPath string, opts map[string]any) error {
 	edge, err := imageRenderEdge(opts)
 	if err != nil {
 		return err
@@ -70,6 +67,11 @@ func (c ImageRenderConverter) draw(ctx context.Context, inPath, outPath, fitPath
 	if info.Size() > MaxFileBytes {
 		return fmt.Errorf("%w: %d bytes exceeds %d", ErrInputTooLarge, info.Size(), MaxFileBytes)
 	}
+	fitPath, err := imageRenderFit(inPath, outPath)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(fitPath)
 	args := []string{
 		"thumbnail", inPath, fitPath, strconv.Itoa(edge),
 		"--height", strconv.Itoa(edge),
@@ -138,6 +140,24 @@ func (c ImageRenderConverter) exec(ctx context.Context, workDir string, args []s
 		return fmt.Errorf("image render: %w", err)
 	}
 	return nil
+}
+
+func imageRenderFit(inPath, outPath string) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(outPath), ".image-render-*.png")
+	if err != nil {
+		return "", fmt.Errorf("image render: fit file: %w", err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", fmt.Errorf("image render: fit file: %w", err)
+	}
+	clean := filepath.Clean(name)
+	if clean == filepath.Clean(outPath) || clean == filepath.Clean(inPath) {
+		_ = os.Remove(name)
+		return "", fmt.Errorf("image render: fit path collided")
+	}
+	return name, nil
 }
 
 func imageRenderPair(from, to string) bool {

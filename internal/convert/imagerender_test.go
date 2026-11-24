@@ -120,10 +120,12 @@ func TestImageRenderLetterbox(t *testing.T) {
 	if calls != 1 || gotName != "vips" {
 		t.Fatalf("calls %d name %s", calls, gotName)
 	}
-	fit := filepath.Join(dir, "fit.png")
-	want := []string{"thumbnail", in, fit, "256", "--height", "256", "--size", "both"}
-	if !slices.Equal(gotArgs, want) {
+	if len(gotArgs) != 8 || gotArgs[0] != "thumbnail" || gotArgs[1] != in || gotArgs[3] != "256" || gotArgs[4] != "--height" || gotArgs[5] != "256" || gotArgs[6] != "--size" || gotArgs[7] != "both" {
 		t.Fatalf("%q", gotArgs)
+	}
+	fit := gotArgs[2]
+	if filepath.Dir(fit) != dir || fit == out || fit == in {
+		t.Fatalf("fit %s", fit)
 	}
 	for _, arg := range gotArgs {
 		for _, bad := range []string{"--no-rotate", "--crop", "force", "nearest", "resize", "autorot", "page"} {
@@ -399,11 +401,76 @@ func TestImageRenderEngineDown(t *testing.T) {
 	if err := (ImageRenderConverter{}).Convert(context.Background(), in, out, nil); err == nil {
 		t.Fatal("expected error")
 	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "in.png" {
+		t.Fatalf("dir %v", entries)
+	}
+}
+
+func TestImageRenderFitDoesNotClobber(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.png")
+	sibling := filepath.Join(dir, "fit.png")
+	if err := os.WriteFile(in, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sibling, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	c := ImageRenderConverter{run: func(context.Context, string, ...string) error {
+		calls++
+		return nil
+	}}
+	out := filepath.Join(dir, "out.png")
+	if err := os.WriteFile(out, []byte("pre"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Convert(context.Background(), in, out, map[string]any{"size": 1}); err == nil || calls != 0 {
+		t.Fatalf("err %v calls %d", err, calls)
+	}
+	body, err := os.ReadFile(sibling)
+	if err != nil || string(body) != "keep" {
+		t.Fatalf("sibling %q %v", body, err)
+	}
 	if _, err := os.Stat(out); !os.IsNotExist(err) {
 		t.Fatal("out remains")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "fit.png")); !os.IsNotExist(err) {
-		t.Fatal("fit remains")
+
+	other := t.TempDir()
+	in2 := filepath.Join(other, "in.png")
+	named := filepath.Join(other, "fit.png")
+	if err := os.WriteFile(in2, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.run = func(_ context.Context, _ string, args ...string) error {
+		calls++
+		if args[2] == named || args[2] == in2 {
+			t.Fatalf("fit %s", args[2])
+		}
+		return writeSolidPNG(args[2], 256, 256, color.NRGBA{R: 255, A: 255})
+	}
+	if err := c.Convert(context.Background(), in2, named, map[string]any{"size": 256}); err != nil {
+		t.Fatal(err)
+	}
+	img := decodePNG(t, named)
+	if img.Bounds().Dx() != 256 || img.Bounds().Dy() != 256 {
+		t.Fatalf("%v", img.Bounds())
+	}
+	entries, err := os.ReadDir(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"fit.png", "in.png"}) {
+		t.Fatalf("%v", names)
 	}
 }
 
