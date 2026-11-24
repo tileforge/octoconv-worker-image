@@ -9,6 +9,9 @@ import (
 	"errors"
 	"go/parser"
 	"go/token"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"io/fs"
 	"net/http"
@@ -909,4 +912,126 @@ func TestAttemptDeadlineStopsStalledDownload(t *testing.T) {
 	default:
 		t.Fatal("fail was not posted")
 	}
+}
+
+func TestManifestOperationRender(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "schema", "manifest-image-render.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := manifestOperation(raw)
+	if err != nil || got != convert.OperationRender {
+		t.Fatalf("operation %q %v", got, err)
+	}
+	body := `{"capabilities":[{"legacy":{"operation":"render","engine":"html"}}]}`
+	if _, err := manifestOperation([]byte(body)); err == nil {
+		t.Fatal("accepted html render")
+	}
+}
+
+func TestImageRenderAssignmentNilOpts(t *testing.T) {
+	for _, params := range []json.RawMessage{nil, json.RawMessage("null"), json.RawMessage("{}")} {
+		rec := &recordingConverter{opts: map[string]any{"sentinel": true}}
+		fails, puts := runImageRenderAssignment(t, []byte("png"), "png", "png", params, rec)
+		if fails != 0 || len(puts) != 1 || rec.opts != nil {
+			t.Fatalf("params %s fails %d puts %d opts %#v", params, fails, len(puts), rec.opts)
+		}
+		if puts[0].contentType != "image/png" {
+			t.Fatalf("content type %s", puts[0].contentType)
+		}
+	}
+}
+
+func TestImageRenderAssignmentParameters(t *testing.T) {
+	for _, raw := range []string{`{"size":1280}`, `{"quality":1}`} {
+		rec := &recordingConverter{opts: map[string]any{"sentinel": true}}
+		fails, puts := runImageRenderAssignment(t, []byte("png"), "png", "png", json.RawMessage(raw), rec)
+		if fails != 1 || len(puts) != 0 {
+			t.Fatalf("%s fails %d puts %d", raw, fails, len(puts))
+		}
+		if _, ok := rec.opts["sentinel"]; !ok {
+			t.Fatalf("%s reached convert", raw)
+		}
+	}
+	for _, params := range []json.RawMessage{nil, json.RawMessage("null"), json.RawMessage("{}")} {
+		rec := &recordingConverter{opts: map[string]any{"sentinel": true}}
+		fails, puts := runImageRenderAssignment(t, []byte("png"), "png", "png", params, rec)
+		if fails != 0 || len(puts) != 1 || rec.opts != nil {
+			t.Fatalf("params %s fails %d puts %d opts %#v", params, fails, len(puts), rec.opts)
+		}
+	}
+}
+
+func TestImageRenderAssignmentUndrawable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var buf bytes.Buffer
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	img.SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	fails, puts := runImageRenderAssignment(t, buf.Bytes(), "png", "png", nil, nil)
+	if fails != 1 || len(puts) != 0 {
+		t.Fatalf("fails %d puts %d", fails, len(puts))
+	}
+}
+
+func runImageRenderAssignment(t *testing.T, src []byte, from, to string, params json.RawMessage, rec *recordingConverter) (int, []putBody) {
+	t.Helper()
+	var mu sync.Mutex
+	fails := 0
+	var puts []putBody
+	c := protocolTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write(src)
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			puts = append(puts, putBody{body: body, contentType: r.Header.Get("Content-Type")})
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			if strings.Contains(r.URL.Path, "/fail") {
+				mu.Lock()
+				fails++
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}), nil)
+	c.fileHTTP = c.coreHTTP
+	c.operation = convert.OperationRender
+	c.engineLimit = time.Minute
+	c.leaseSeconds = 30
+	c.sessionToken = "token"
+	if rec != nil {
+		c.lookupOp = func(op, gotFrom, gotTo string) (convert.Converter, bool) {
+			if op != convert.OperationRender || gotFrom != from || gotTo != to {
+				return nil, false
+			}
+			return rec, true
+		}
+	}
+	href := c.core.String() + "/objects/render"
+	asgn := assignmentJSON{
+		AttemptID:       "render-" + from + "-" + string(params),
+		AttemptToken:    "attempt-token",
+		AttemptDeadline: time.Now().Add(30 * time.Minute).Format(time.RFC3339Nano),
+		LeaseExpiresAt:  time.Now().Add(time.Hour).Format(time.RFC3339Nano),
+		Limits:          limitsJSON{MaxOutputBytes: convert.MaxFileBytes},
+		Parameters:      params,
+		Inputs:          []fileLinkJSON{{Role: "source", Ordinal: 0, Href: href, Format: from}},
+		Outputs:         []fileLinkJSON{{Role: "primary", Ordinal: 0, Href: href, Format: to}},
+	}
+	if err := c.runAssignment(context.Background(), asgn, controlJSON{}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return fails, puts
 }
