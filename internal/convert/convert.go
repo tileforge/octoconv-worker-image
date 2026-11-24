@@ -17,6 +17,7 @@ var ErrInputTooLarge = errors.New("input too large")
 const (
 	EngineImage                = "image"
 	OperationConvert           = "convert"
+	OperationRender            = "render"
 	DefaultEngineTimeout       = 120 * time.Second
 	MaxFileBytes         int64 = 100 << 20
 )
@@ -81,11 +82,25 @@ func NewRegistry() *Registry {
 	return &Registry{m: make(map[opKey]Converter)}
 }
 
+type operationalConverter interface {
+	Operation() string
+}
+
+func operationOf(c Converter) string {
+	if op, ok := c.(operationalConverter); ok {
+		if name := op.Operation(); name != "" {
+			return name
+		}
+	}
+	return OperationConvert
+}
+
 // Register indexes each pair c reports.
 func (r *Registry) Register(c Converter) {
+	op := operationOf(c)
 	for _, pair := range c.Pairs() {
 		r.m[opKey{
-			Operation: OperationConvert,
+			Operation: op,
 			From:      NormalizeFormat(pair.From),
 			To:        NormalizeFormat(pair.To),
 		}] = c
